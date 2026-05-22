@@ -54,6 +54,7 @@
     <div class="edit-card">
         <h2><i data-lucide="edit-3"></i> Edit Transaction</h2>
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <label>Date</label>
             <input type="date" name="date" value="{{ transaction.date }}" required>
             

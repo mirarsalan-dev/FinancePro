@@ -1,2 +1,4 @@
 firebase_credentials.json
 .env
+Procfile
+data.json

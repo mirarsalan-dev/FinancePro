@@ -4,7 +4,6 @@
 {% block content %}
 <div style="max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px;">
 
-    <!-- Flash Messages (For Success/Error alerts) -->
     {% with messages = get_flashed_messages() %}
         {% if messages %}
             {% for message in messages %}
@@ -15,7 +14,6 @@
         {% endif %}
     {% endwith %}
 
-    <!-- Profile Overview -->
     <div class="pro-card glass" style="margin: 0;">
         <div class="pro-card-header"><h2><i data-lucide="user" width="18"></i> Profile Overview</h2></div>
         <div class="pro-card-body" style="display: flex; align-items: center; gap: 24px;">
@@ -30,12 +28,12 @@
     </div>
 
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px;">
-        <!-- Currency Settings -->
         <div class="pro-card glass" style="margin: 0;">
             <div class="pro-card-header"><h2><i data-lucide="globe" width="18"></i> Default Currency</h2></div>
             <div class="pro-card-body">
                 <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">This currency will be used across your dashboard and generated PDF reports.</p>
                 <form method="POST" action="{{ url_for('set_currency') }}" style="display: flex; gap: 12px;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                     <select name="currency" class="input-pro" style="flex: 1;">
                         {% for code, sym in currencies.items() %}
                             <option value="{{ code }}" {% if code == user_currency %}selected{% endif %}>{{ code }} ({{ sym }})</option>
@@ -46,12 +44,12 @@
             </div>
         </div>
 
-        <!-- Security -->
         <div class="pro-card glass" style="margin: 0;">
             <div class="pro-card-header"><h2><i data-lucide="lock" width="18"></i> Security</h2></div>
             <div class="pro-card-body">
                 <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Update your account password. You will not be logged out.</p>
                 <form method="POST" action="{{ url_for('update_password') }}" style="display: flex; gap: 12px;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                     <input type="password" name="new_password" class="input-pro" placeholder="New Password" required style="flex: 1;">
                     <button type="submit" class="btn btn-primary"><i data-lucide="save" width="16"></i> Save</button>
                 </form>
@@ -59,7 +57,6 @@
         </div>
     </div>
 
-    <!-- Danger Zone -->
     <div class="pro-card glass" style="border-color: rgba(225, 29, 72, 0.3); margin: 0;">
         <div class="pro-card-header" style="background: var(--danger-light); border-bottom-color: rgba(225, 29, 72, 0.2);">
             <h2 style="color: var(--danger);"><i data-lucide="alert-triangle" width="18"></i> Danger Zone</h2>
@@ -70,6 +67,7 @@
                 <p style="font-size: 13px; color: var(--text-muted);">Permanently delete all transaction history. Budgets and Goals will be kept safe. This action <strong>cannot</strong> be undone.</p>
             </div>
             <form method="POST" action="{{ url_for('wipe_data') }}" onsubmit="return confirm('Are you absolutely sure you want to delete all transaction history?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <button type="submit" class="btn btn-primary" style="background: var(--danger);">Delete All Data</button>
             </form>
         </div>

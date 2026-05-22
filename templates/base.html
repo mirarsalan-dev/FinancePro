@@ -98,13 +98,11 @@
     <div class="ambient-glow"></div>
 
     <div class="app-container">
-        <!-- Centralized Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-brand"><i data-lucide="hexagon" style="color: var(--primary);"></i>FinancePro</div>
             
             <div style="flex: 1;">
                 <p style="color: var(--text-sidebar); font-size: 12px; text-transform: uppercase; font-weight: 600; margin-bottom: 16px; padding-left: 14px;">Menu</p>
-                <!-- Dynamic Highlighting based on current route! -->
                 <a href="{{ url_for('index') }}" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}"><i data-lucide="layout-dashboard" width="18"></i> Dashboard</a>
                 <a href="{{ url_for('transactions') }}" class="nav-link {% if request.endpoint == 'transactions' %}active{% endif %}"><i data-lucide="list" width="18"></i> Transactions</a>
                 <a href="{{ url_for('analytics') }}" class="nav-link {% if request.endpoint == 'analytics' %}active{% endif %}"><i data-lucide="pie-chart" width="18"></i> Analytics</a>
@@ -121,17 +119,15 @@
         </aside>
 
         <div class="main-wrapper">
-            <!-- Centralized Topbar -->
             <header class="topbar glass">
                 <div style="display: flex; align-items: center; gap: 16px;">
                     <button class="menu-toggle" id="menuToggle"><i data-lucide="menu"></i></button>
-                    <!-- View Title Injected Here -->
                     <h1 style="font-size: 18px; color: var(--text-main); font-weight: 600;">{% block title %}Overview{% endblock %}</h1>
                 </div>
                 <div class="topbar-controls">
                     <button class="btn btn-icon glass" id="themeToggle" onclick="toggleTheme()"><i id="themeIcon" data-lucide="sun" width="18"></i></button>
-                    <!-- Empty action means it submits to whatever page you are currently on! -->
                     <form action="{{ url_for('set_currency') }}" method="POST" style="margin: 0;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                         <select name="currency" class="input-pro glass" style="width: auto; padding: 8px 30px 8px 12px; border-radius: 20px;" onchange="this.form.submit()">
                             {% for code, sym in currencies.items() %}
                                 <option value="{{ code }}" {% if code == user_currency %}selected{% endif %}>{{ code }}</option>
@@ -151,7 +147,6 @@
             </header>
 
             <main class="main-content">
-                <!-- SPECIFIC PAGE CONTENT IS INJECTED HERE -->
                 {% block content %}{% endblock %}
             </main>
         </div>
@@ -186,7 +181,6 @@
         });
     </script>
     
-    <!-- PAGE SPECIFIC SCRIPTS INJECTED HERE -->
     {% block scripts %}{% endblock %}
 </body>
 </html>

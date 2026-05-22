@@ -5,26 +5,38 @@ import csv
 from io import StringIO
 from datetime import datetime
 import os
+import uuid
+import re
+import logging
 from dotenv import load_dotenv
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from flask_wtf.csrf import CSRFProtect
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from io import BytesIO
 
+# --- CONFIGURATION & LOGGING ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_production_key')
+csrf = CSRFProtect(app) # NEW: Globally enables CSRF protection
 
 # --- FIREBASE INITIALIZATION ---
-cred = credentials.Certificate("firebase_credentials.json")
-# Prevent re-initialization if the app reloads
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+firebase_cert_path = os.environ.get("FIREBASE_CREDENTIALS", "firebase_credentials.json")
+try:
+    cred = credentials.Certificate(firebase_cert_path)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+except FileNotFoundError:
+    logging.critical(f"Firebase credentials not found at {firebase_cert_path}. App cannot start.")
+    raise
 # -------------------------------
 
 CURRENCIES = {
@@ -32,12 +44,49 @@ CURRENCIES = {
     "AUD": "A$", "CAD": "C$", "CHF": "CHF", "CNY": "¥"
 }
 
+# --- SECURITY UTILITIES ---
+def sanitize_key(key_string):
+    """Strips dangerous/special characters from strings used as dictionary keys."""
+    return re.sub(r'[^a-zA-Z0-9 _-]', '', str(key_string)).strip()
+
 def get_user_data(username):
-    doc = db.collection('users').document(username).get()
-    return doc.to_dict() if doc.exists else None
+    try:
+        doc = db.collection('users').document(username).get()
+        if not doc.exists:
+            return None
+            
+        user_data = doc.to_dict()
+        needs_update = False
+        
+        defaults = {
+            "currency": "USD", "budgets": {}, "transactions": [],
+            "subscriptions": [], "savings_goals": {}, "debts": {},
+            "last_billed_month": ""
+        }
+        
+        for key, default_val in defaults.items():
+            if key not in user_data:
+                user_data[key] = default_val
+                needs_update = True
+                
+        for t in user_data['transactions']:
+            if 'id' not in t:
+                t['id'] = str(uuid.uuid4())
+                needs_update = True
+                
+        if needs_update:
+            save_user_data(username, user_data)
+            
+        return user_data
+    except Exception as e:
+        logging.error(f"Database error fetching user {username}: {e}")
+        return None
 
 def save_user_data(username, data):
-    db.collection('users').document(username).set(data)
+    try:
+        db.collection('users').document(username).set(data)
+    except Exception as e:
+        logging.error(f"Failed to save data for user {username}: {e}")
 
 def login_required(f):
     @wraps(f)
@@ -121,32 +170,49 @@ def index():
     currency_symbol = CURRENCIES.get(user_data.get('currency', 'USD'), '$')
     
     if request.method == 'POST':
-        if 'amount' in request.form and 'type' in request.form:
-            try:
+        try:
+            if 'amount' in request.form and 'type' in request.form:
                 user_data['transactions'].append({
+                    "id": str(uuid.uuid4()),
                     "type": request.form.get('type', 'expense'),
                     "amount": float(request.form['amount']),
                     "category": request.form['category'],
                     "description": request.form['description'],
                     "date": request.form.get('date', datetime.now().strftime("%Y-%m-%d"))
                 })
-            except ValueError: pass 
-        elif 'budget_amount' in request.form:
-            user_data['budgets'][request.form['budget_category']] = float(request.form['budget_amount'])
-        elif 'sub_amount' in request.form:
-            user_data['subscriptions'].append({"name": request.form['sub_name'], "amount": float(request.form['sub_amount'])})
-        elif 'goal_target' in request.form:
-            user_data['savings_goals'][request.form['goal_name']] = {"target": float(request.form['goal_target']), "saved": 0.0}
-        elif 'add_to_goal' in request.form:
-            goal_name = request.form['goal_name']
-            if goal_name in user_data['savings_goals']: user_data['savings_goals'][goal_name]['saved'] += float(request.form['add_to_goal'])
-        elif 'debt_principal' in request.form:
-            user_data['debts'][request.form['debt_name']] = {"principal": float(request.form['debt_principal']), "rate": float(request.form.get('debt_rate', 0)), "paid": 0.0}
-        elif 'pay_debt' in request.form:
-            debt_name = request.form['debt_name']
-            if debt_name in user_data['debts']: user_data['debts'][debt_name]['paid'] += float(request.form['pay_debt'])
-        
-        save_user_data(username, user_data)
+                flash("Transaction logged successfully!")
+                
+            elif 'budget_amount' in request.form:
+                safe_cat = sanitize_key(request.form['budget_category'])
+                if safe_cat: user_data['budgets'][safe_cat] = float(request.form['budget_amount'])
+                flash("Budget updated!")
+                
+            elif 'sub_amount' in request.form:
+                user_data['subscriptions'].append({"name": request.form['sub_name'], "amount": float(request.form['sub_amount'])})
+                
+            elif 'goal_target' in request.form:
+                safe_goal = sanitize_key(request.form['goal_name'])
+                if safe_goal: user_data['savings_goals'][safe_goal] = {"target": float(request.form['goal_target']), "saved": 0.0}
+                
+            elif 'add_to_goal' in request.form:
+                goal_name = request.form['goal_name'] # Doesn't need sanitizing as we are just checking if it exists
+                if goal_name in user_data['savings_goals']: 
+                    user_data['savings_goals'][goal_name]['saved'] += float(request.form['add_to_goal'])
+                    
+            elif 'debt_principal' in request.form:
+                safe_debt = sanitize_key(request.form['debt_name'])
+                if safe_debt: user_data['debts'][safe_debt] = {"principal": float(request.form['debt_principal']), "rate": float(request.form.get('debt_rate', 0)), "paid": 0.0}
+                
+            elif 'pay_debt' in request.form:
+                debt_name = request.form['debt_name']
+                if debt_name in user_data['debts']: 
+                    user_data['debts'][debt_name]['paid'] += float(request.form['pay_debt'])
+            
+            save_user_data(username, user_data)
+            
+        except ValueError:
+            flash("Error: Please enter a valid numerical amount.")
+            
         return redirect(url_for('index'))
 
     transactions = user_data['transactions']
@@ -304,13 +370,19 @@ def set_currency():
     save_user_data(session['username'], user_data)
     return redirect(request.referrer or url_for('index'))
 
-@app.route('/delete/<int:index>', methods=['POST'])
+@app.route('/delete/<tx_id>', methods=['POST'])  # <-- Changed from <int:index> to <tx_id>
 @login_required
-def delete_transaction(index):
+def delete_transaction(tx_id):
     user_data = get_user_data(session['username'])
-    if 0 <= index < len(user_data['transactions']):
-        user_data['transactions'].pop(index)
+    
+    # Filter out the transaction with the matching UUID
+    original_length = len(user_data['transactions'])
+    user_data['transactions'] = [t for t in user_data['transactions'] if t.get('id') != tx_id]
+    
+    if len(user_data['transactions']) < original_length:
         save_user_data(session['username'], user_data)
+        flash("Transaction deleted.")
+        
     return redirect(request.referrer or url_for('index'))
 
 @app.route('/delete_budget/<category>', methods=['POST'])
@@ -349,12 +421,17 @@ def delete_debt(debt_name):
         save_user_data(session['username'], user_data)
     return redirect(url_for('index'))
 
-@app.route('/edit/<int:index>', methods=['GET', 'POST'])
+@app.route('/edit/<tx_id>', methods=['GET', 'POST']) # <-- Changed to <tx_id>
 @login_required
-def edit_transaction(index):
+def edit_transaction(tx_id):
     user_data = get_user_data(session['username'])
-    if index < 0 or index >= len(user_data['transactions']): return redirect(url_for('index'))
-    transaction = user_data['transactions'][index]
+    
+    # Find the specific transaction dictionary
+    transaction = next((t for t in user_data['transactions'] if t.get('id') == tx_id), None)
+    
+    if not transaction: 
+        flash("Transaction not found.")
+        return redirect(url_for('index'))
     
     if request.method == 'POST':
         try:
@@ -363,11 +440,14 @@ def edit_transaction(index):
             transaction['category'] = request.form['category']
             transaction['description'] = request.form['description']
             transaction['date'] = request.form['date']
-            save_user_data(session['username'], user_data)
-            return redirect(url_for('transactions'))
-        except ValueError: pass
             
-    return render_template('edit.html', transaction=transaction, index=index, currency_symbol=CURRENCIES.get(user_data.get('currency', 'USD'), '$'), username=session['username'])
+            save_user_data(session['username'], user_data)
+            flash("Transaction updated!")
+            return redirect(url_for('transactions'))
+        except ValueError: 
+            flash("Error: Invalid number format.")
+            
+    return render_template('edit.html', transaction=transaction, currency_symbol=CURRENCIES.get(user_data.get('currency', 'USD'), '$'), username=session['username'])
 
 @app.route('/export')
 @login_required
@@ -432,5 +512,5 @@ def export_transactions():
     return response
 
 if __name__ == '__main__':
-    # host='0.0.0.0' tells Flask to listen on all public IPs on your network
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    is_debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
+    app.run(host='0.0.0.0', port=5000, debug=is_debug)

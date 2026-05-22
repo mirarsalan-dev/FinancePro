@@ -9,7 +9,6 @@
             <i data-lucide="search" width="16" style="position: absolute; left: 12px; top: 12px; color: var(--text-muted);"></i>
             <input type="text" name="q" value="{{ search_query }}" class="input-pro" placeholder="Search categories or descriptions..." style="padding-left: 36px; border-radius: 20px;">
         </form>
-        <!-- The export button now triggers a PDF download -->
         <a href="{{ url_for('export_transactions', month=selected_month, q=search_query) }}" class="btn btn-ghost" style="border: 1px solid var(--border); color: var(--primary);">
             <i data-lucide="file-text" width="16"></i> Download PDF
         </a>
@@ -31,8 +30,9 @@
                         {% if t.type == 'income' %}+{% else %}-{% endif %}{{ currency_symbol }}{{ "%.2f"|format(t.amount) }}
                     </td>
                     <td style="text-align: right; display: flex; justify-content: flex-end; gap: 8px; align-items: center; border-bottom: none;">
-                        <a href="{{ url_for('edit_transaction', index=t.id) }}" class="btn btn-ghost" style="padding: 6px; border: 1px solid transparent;"><i data-lucide="edit-2" width="14"></i></a>
-                        <form method="POST" action="{{ url_for('delete_transaction', index=t.id) }}" style="margin: 0;">
+                        <a href="{{ url_for('edit_transaction', tx_id=t.id) }}" class="btn btn-ghost" style="padding: 6px; border: 1px solid transparent;"><i data-lucide="edit-2" width="14"></i></a>
+                        <form method="POST" action="{{ url_for('delete_transaction', tx_id=t.id) }}" style="margin: 0;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                             <button type="submit" class="btn btn-ghost" style="padding: 6px; color: var(--danger); border: 1px solid transparent;"><i data-lucide="trash-2" width="14"></i></button>
                         </form>
                     </td>
