@@ -13,21 +13,39 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 from flask_wtf.csrf import CSRFProtect
+from flask_limiter import Limiter                   # NEW: Import Limiter
+from flask_limiter.util import get_remote_address   # NEW: Import IP tracking utility
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from io import BytesIO
 
-# --- CONFIGURATION & LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 
+# --- FLASK CONFIGURATION ---
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_production_key')
-csrf = CSRFProtect(app) # NEW: Globally enables CSRF protection
 
-# --- FIREBASE INITIALIZATION ---
+# Check if we are in local development or live production
+is_debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
+
+# Lock down session cookies
+app.config.update(
+    SESSION_COOKIE_SECURE=not is_debug,  # Requires HTTPS in production, allows HTTP locally
+    SESSION_COOKIE_HTTPONLY=True,        # Prevents JavaScript from reading the cookie
+    SESSION_COOKIE_SAMESITE='Lax'        # Protects against cross-site request forgery
+)
+
+csrf = CSRFProtect(app)
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["5 per 15 seconds"],
+    storage_uri="memory://"
+)
+
 firebase_cert_path = os.environ.get("FIREBASE_CREDENTIALS", "firebase_credentials.json")
 try:
     cred = credentials.Certificate(firebase_cert_path)
@@ -44,7 +62,12 @@ CURRENCIES = {
     "AUD": "A$", "CAD": "C$", "CHF": "CHF", "CNY": "¥"
 }
 
-# --- SECURITY UTILITIES ---
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    # If a user clicks too fast, flash a warning and send them back safely
+    flash(f"Whoa, slow down! {e.description}")
+    return redirect(request.referrer or url_for('index'))
+
 def sanitize_key(key_string):
     """Strips dangerous/special characters from strings used as dictionary keys."""
     return re.sub(r'[^a-zA-Z0-9 _-]', '', str(key_string)).strip()
@@ -95,8 +118,8 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- AUTH ROUTES ---
 @app.route('/register', methods=['GET', 'POST'])
+@limiter.limit("5 per 15 seconds")
 def register():
     if request.method == 'POST':
         username = request.form['username'].lower()
@@ -117,6 +140,7 @@ def register():
     return render_template('auth.html', action="Register")
 
 @app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("5 per 15 seconds")
 def login():
     if request.method == 'POST':
         username = request.form['username'].lower()
@@ -129,11 +153,11 @@ def login():
     return render_template('auth.html', action="Login")
 
 @app.route('/logout')
+@limiter.limit("5 per 15 seconds")
 def logout():
     session.pop('username', None)
     return redirect(url_for('login'))
 
-# --- 1. DASHBOARD OVERVIEW ---
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -151,9 +175,7 @@ def index():
     if 'last_billed_month' not in user_data: user_data['last_billed_month'] = ""
 
     current_month = datetime.now().strftime("%Y-%m")
-    
-    # === FEATURE: AUTOMATED RECURRING BILLS ===
-    # If it's a new month, auto-log all fixed bills!
+
     if user_data['last_billed_month'] != current_month and len(user_data['subscriptions']) > 0:
         for sub in user_data['subscriptions']:
             user_data['transactions'].append({
@@ -165,7 +187,6 @@ def index():
             })
         user_data['last_billed_month'] = current_month
         save_user_data(username, user_data) # Save immediately so they show up
-    # ==========================================
         
     currency_symbol = CURRENCIES.get(user_data.get('currency', 'USD'), '$')
     
@@ -195,7 +216,7 @@ def index():
                 if safe_goal: user_data['savings_goals'][safe_goal] = {"target": float(request.form['goal_target']), "saved": 0.0}
                 
             elif 'add_to_goal' in request.form:
-                goal_name = request.form['goal_name'] # Doesn't need sanitizing as we are just checking if it exists
+                goal_name = request.form['goal_name'] 
                 if goal_name in user_data['savings_goals']: 
                     user_data['savings_goals'][goal_name]['saved'] += float(request.form['add_to_goal'])
                     
@@ -232,25 +253,20 @@ def index():
     for t in display_transactions:
         if t['type'] == 'expense': category_totals[t['category']] = category_totals.get(t['category'], 0) + t['amount']
 
-    # === FEATURE: SMART INSIGHTS ENGINE ===
     insights = []
-    # 1. Budget Warnings
     for cat, limit in user_data.get('budgets', {}).items():
         spent = category_totals.get(cat, 0)
         if limit > 0 and (spent / limit) >= 0.85:
             insights.append({"icon": "alert-triangle", "color": "var(--warning)", "msg": f"Careful! You've used {int((spent/limit)*100)}% of your {cat} budget."})
-    
-    # 2. Cash Flow Health
+
     if net_balance < 0:
         insights.append({"icon": "trending-down", "color": "var(--danger)", "msg": f"You are currently running a deficit of {currency_symbol}{abs(net_balance):.2f} this month."})
     elif net_balance > 0 and total_income > 0:
         savings_rate = (net_balance / total_income) * 100
         insights.append({"icon": "trending-up", "color": "var(--success)", "msg": f"Great job! You are saving {savings_rate:.1f}% of your income this month."})
     
-    # 3. Fallback Motivation
     if not insights:
         insights.append({"icon": "check-circle", "color": "var(--primary)", "msg": "Your finances are looking stable. Keep logging your transactions!"})
-    # ======================================
 
     recent_txs = sorted(transactions, key=lambda x: x['date'], reverse=True)[:5]
 
@@ -263,8 +279,8 @@ def index():
                            savings_goals=user_data.get('savings_goals', {}), debts=user_data.get('debts', {}),
                            insights=insights, username=username)
 
-# --- 2. TRANSACTIONS ---
 @app.route('/transactions')
+@limiter.limit("5 per 15 seconds")
 @login_required
 def transactions():
     user_data = get_user_data(session['username'])
@@ -290,8 +306,8 @@ def transactions():
 
     return render_template('transactions.html', transactions=paginated_transactions, all_months=all_months, selected_month=selected_month, search_query=search_query, page=page, total_pages=total_pages, currencies=CURRENCIES, user_currency=user_data.get('currency', 'USD'), currency_symbol=currency_symbol, username=session['username'])
 
-# --- 3. ANALYTICS ---
 @app.route('/analytics')
+@limiter.limit("5 per 15 seconds")
 @login_required
 def analytics():
     user_data = get_user_data(session['username'])
@@ -322,8 +338,8 @@ def analytics():
 
     return render_template('analytics.html', trend_data=trend_data, category_totals=category_totals, monthly_breakdown=monthly_breakdown, top_expenses=top_expenses, all_months=all_months, selected_month=selected_month, currencies=CURRENCIES, user_currency=user_data.get('currency', 'USD'), currency_symbol=currency_symbol, username=session['username'])
 
-# --- 4. FEATURE: SETTINGS & PROFILE ---
 @app.route('/settings')
+@limiter.limit("5 per 15 seconds")
 @login_required
 def settings():
     user_data = get_user_data(session['username'])
@@ -340,6 +356,7 @@ def settings():
                            username=session['username'])
 
 @app.route('/update_password', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def update_password():
     user_data = get_user_data(session['username'])
@@ -351,6 +368,7 @@ def update_password():
     return redirect(url_for('settings'))
 
 @app.route('/wipe_data', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def wipe_data():
     user_data = get_user_data(session['username'])
@@ -359,10 +377,9 @@ def wipe_data():
     save_user_data(session['username'], user_data)
     flash("All transactions have been permanently deleted.")
     return redirect(url_for('settings'))
-# --------------------------------------
 
-# --- UTILITIES & EXPORTS ---
 @app.route('/set_currency', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def set_currency():
     user_data = get_user_data(session['username'])
@@ -370,12 +387,12 @@ def set_currency():
     save_user_data(session['username'], user_data)
     return redirect(request.referrer or url_for('index'))
 
-@app.route('/delete/<tx_id>', methods=['POST'])  # <-- Changed from <int:index> to <tx_id>
+@app.route('/delete/<tx_id>', methods=['POST'])  
+@limiter.limit("5 per 15 seconds")
 @login_required
 def delete_transaction(tx_id):
     user_data = get_user_data(session['username'])
     
-    # Filter out the transaction with the matching UUID
     original_length = len(user_data['transactions'])
     user_data['transactions'] = [t for t in user_data['transactions'] if t.get('id') != tx_id]
     
@@ -386,6 +403,7 @@ def delete_transaction(tx_id):
     return redirect(request.referrer or url_for('index'))
 
 @app.route('/delete_budget/<category>', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def delete_budget(category):
     user_data = get_user_data(session['username'])
@@ -395,6 +413,7 @@ def delete_budget(category):
     return redirect(url_for('index'))
 
 @app.route('/delete_sub/<int:index>', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def delete_sub(index):
     user_data = get_user_data(session['username'])
@@ -404,6 +423,7 @@ def delete_sub(index):
     return redirect(url_for('index'))
 
 @app.route('/delete_goal/<goal_name>', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def delete_goal(goal_name):
     user_data = get_user_data(session['username'])
@@ -413,6 +433,7 @@ def delete_goal(goal_name):
     return redirect(url_for('index'))
 
 @app.route('/delete_debt/<debt_name>', methods=['POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def delete_debt(debt_name):
     user_data = get_user_data(session['username'])
@@ -421,7 +442,8 @@ def delete_debt(debt_name):
         save_user_data(session['username'], user_data)
     return redirect(url_for('index'))
 
-@app.route('/edit/<tx_id>', methods=['GET', 'POST']) # <-- Changed to <tx_id>
+@app.route('/edit/<tx_id>', methods=['GET', 'POST'])
+@limiter.limit("5 per 15 seconds")
 @login_required
 def edit_transaction(tx_id):
     user_data = get_user_data(session['username'])
@@ -450,6 +472,7 @@ def edit_transaction(tx_id):
     return render_template('edit.html', transaction=transaction, currency_symbol=CURRENCIES.get(user_data.get('currency', 'USD'), '$'), username=session['username'])
 
 @app.route('/export')
+@limiter.limit("5 per 15 seconds")
 @login_required
 def export_transactions():
     user_data = get_user_data(session['username'])
